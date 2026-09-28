@@ -1,0 +1,4 @@
+condition,n_trials,mean_size,std_size,min_size,max_size
+fingertip,10,1.2,0.42163702135578396,1,2
+thumb,9,2.111111111111111,1.0540925533894598,1,4
+two-finger,6,1.0,0.0,1,1
