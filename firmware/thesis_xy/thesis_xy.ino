@@ -45,37 +45,6 @@
 // Debug LED (PC0)
 #define RECORD_LED_TOGGLE_MS      50
 
-// --- Evaluation instrumentation (see evaluation-protocol.md) ---
-// 0 = normal operation (no instrumentation). 1-6 select one test at a time;
-// build/flash separately per test so instrumentation never mixes with
-// normal operation or with another test.
-//   1 = frame rate            4 = hysteresis effectiveness
-//   2 = internal latency      5 = size-estimate correlation
-//   3 = positional accuracy   6 = recording/playback fidelity
-#define EVAL_MODE 0
-// Test 4 only: set to 1 to run the "hysteresis disabled" condition
-// (release threshold == touch threshold) for the flicker-count comparison.
-#define EVAL_TEST4_DISABLE_HYSTERESIS 0
-
-#if EVAL_MODE == 4 && EVAL_TEST4_DISABLE_HYSTERESIS
-#define EVAL_RELEASE_THRESHOLD TOUCH_THRESHOLD
-#else
-#define EVAL_RELEASE_THRESHOLD TOUCH_RELEASE_THRESHOLD
-#endif
-
-// --- MIDI demo mode (touch-to-MIDI bridge for the Logic Pro demo) ---
-// Off by default so it never interferes with EVAL_MODE or normal operation.
-// When on, sendMidiFromTouch() writes raw MIDI bytes to the same Serial
-// link Hairless reads as a continuous byte stream, so it can't share that
-// link with the human-readable debug prints (printActiveTouches,
-// printControlModes, the setup banner) -- those are suppressed below
-// whenever this is set.
-#define MIDI_DEMO_MODE 0
-
-#if MIDI_DEMO_MODE && EVAL_MODE != 0
-#error "MIDI_DEMO_MODE requires EVAL_MODE 0 -- MIDI bytes and eval text can't share the serial link"
-#endif
-
 // DAC routing
 #define DAC_MAX_VALUE             4095
 #define DAC_CHANNEL_X             MCP4728_CHANNEL_A
@@ -276,17 +245,6 @@ void recordDominantTouchIfDue(const DominantTouch &dominant) {
     return;
   }
 
-#if EVAL_MODE == 6
-  Serial.print(F("RECORD_SAMPLE,"));
-  if (dominant.valid) {
-    Serial.print(dominant.tx);
-    Serial.print(',');
-    Serial.println(toPhysicalRx(dominant.rxOffset));
-  } else {
-    Serial.println(F("NONE"));
-  }
-#endif
-
   appendRecordedSample(encodeDominantTouch(dominant));
 }
 
@@ -314,25 +272,11 @@ void outputReplaySampleToDac(uint8_t encodedSample) {
   uint8_t tx = 0;
   uint8_t rxOffset = 0;
 
-  bool hasTouch = decodeRecordedTouchPoint(encodedSample, &tx, &rxOffset);
-  if (hasTouch) {
+  if (decodeRecordedTouchPoint(encodedSample, &tx, &rxOffset)) {
     xValue = mapTxToDac(tx);
     yValue = mapRxToDac(rxOffset);
     touchFlagValue = DAC_TOUCH_HIGH;
   }
-
-#if EVAL_MODE == 6
-  Serial.print(F("REPLAY_SAMPLE,"));
-  Serial.print(millis());
-  Serial.print(',');
-  if (hasTouch) {
-    Serial.print(tx);
-    Serial.print(',');
-    Serial.println(toPhysicalRx(rxOffset));
-  } else {
-    Serial.println(F("NONE"));
-  }
-#endif
 
   writeDacOutputsIfChanged(xValue, yValue, sizeValue, touchFlagValue);
 }
@@ -449,9 +393,6 @@ void updateRecordLed() {
 }
 
 void printControlModes() {
-#if MIDI_DEMO_MODE
-  return;
-#endif
   Serial.print(F("Modes: Record="));
   Serial.print(recordModeEnabled ? F("ON") : F("OFF"));
   Serial.print(F(" Playback="));
@@ -582,16 +523,7 @@ DominantTouch scanTouchMatrix(bool *stateChanged) {
       uint16_t base = baseline[cellIndex];
       uint16_t delta = touchStrength(reading, base);
       bool wasActive = isTouchBitSet(previousTouchBits, cellIndex);
-      bool active = delta >= (wasActive ? EVAL_RELEASE_THRESHOLD : TOUCH_THRESHOLD);
-
-#if EVAL_MODE == 4
-      if (active != wasActive) {
-        Serial.print(F("TRANSITION,"));
-        Serial.print(millis());
-        Serial.print(',');
-        Serial.println(active ? F("ACTIVE") : F("INACTIVE"));
-      }
-#endif
+      bool active = delta >= (wasActive ? TOUCH_RELEASE_THRESHOLD : TOUCH_THRESHOLD);
 
       setTouchActive(cellIndex, active);
       touchDelta[cellIndex] = active ? delta : 0;
@@ -716,9 +648,6 @@ uint8_t countActiveCells() {
 }
 
 void printActiveTouches(bool stateChanged) {
-#if MIDI_DEMO_MODE
-  return;
-#endif
   static uint16_t lastPrintedHash = 0xFFFF;
   uint8_t activeCellCount = countActiveCells();
   uint16_t frameHash = hashActiveTouches();
@@ -765,45 +694,6 @@ void printActiveTouches(bool stateChanged) {
   Serial.println();
 }
 
-#if MIDI_DEMO_MODE
-void sendMidiFromTouch(const DominantTouch &dt, bool changed) {
-  static bool wasValid = false;
-  static uint8_t lastNoteSent = 0;
-
-  if (!changed) {
-    return;
-  }
-
-  if (dt.valid && !wasValid) {
-    // Map TX (0..MTK_NUM_TX-1) to a pentatonic scale so it sounds musical
-    // rather than chromatic-and-random under fast movement.
-    static const uint8_t pentatonicScale[MTK_NUM_TX] = {60, 62, 65, 67, 69, 72, 74, 77};
-    uint8_t note = pentatonicScale[dt.tx];
-    uint8_t velocity = (uint8_t)map(dt.size, 0, MAX_DOMINANT_CLUSTER_SIZE, 40, 120);
-    Serial.write((uint8_t)0x90);
-    Serial.write(note);
-    Serial.write(velocity);
-    lastNoteSent = note;
-    wasValid = true;
-  } else if (!dt.valid && wasValid) {
-    Serial.write((uint8_t)0x80);
-    Serial.write(lastNoteSent);
-    Serial.write((uint8_t)0);
-    wasValid = false;
-  }
-
-  if (dt.valid) {
-    // CC74 (filter cutoff) from Y, continuous while touched -- audibly
-    // sweeps dark-to-bright, unlike CC1/mod wheel which most patches
-    // barely react to.
-    uint8_t ccValue = (uint8_t)map(dt.rxOffset, 0, MTK_RX_COUNT - 1, 0, 127);
-    Serial.write((uint8_t)0xB0);
-    Serial.write((uint8_t)74);
-    Serial.write(ccValue);
-  }
-}
-#endif
-
 void setup() {
   clearTouchState();
   mtk.setup_sensor();
@@ -826,22 +716,8 @@ void setup() {
 #if ENABLE_CONTROL_PADS
   calibrateControlPads();
 #endif
-#if !MIDI_DEMO_MODE
   Serial.println("Setup done...");
-#if EVAL_MODE != 0
-  Serial.print(F("Eval mode: "));
-  Serial.println(EVAL_MODE);
-#endif
-#endif
 }
-
-#if EVAL_MODE == 1
-static unsigned long evalFrameCount = 0;
-static unsigned long evalLastReportMs = 0;
-#endif
-#if EVAL_MODE == 3 || EVAL_MODE == 5
-static bool evalWasValidLastFrame = false;
-#endif
 
 void loop() {
   bool stateChanged = false;
@@ -849,43 +725,7 @@ void loop() {
   if (!mtk.consumeFrame()) {
     return;
   }
-
-#if EVAL_MODE == 1
-  evalFrameCount++;
-#endif
-
-#if EVAL_MODE == 2
-  unsigned long evalT0 = micros();
-#endif
-
   DominantTouch dominant = scanTouchMatrix(&stateChanged);
-
-#if MIDI_DEMO_MODE
-  sendMidiFromTouch(dominant, stateChanged);
-#endif
-
-#if EVAL_MODE == 3
-  if (dominant.valid && !evalWasValidLastFrame) {
-    Serial.print(F("TOUCH,"));
-    Serial.print(dominant.tx);
-    Serial.print(',');
-    Serial.println(toPhysicalRx(dominant.rxOffset));
-  }
-  evalWasValidLastFrame = dominant.valid;
-#endif
-
-#if EVAL_MODE == 5
-  if (dominant.valid && !evalWasValidLastFrame) {
-    Serial.print(F("SIZE,"));
-    Serial.print(dominant.tx);
-    Serial.print(',');
-    Serial.print(toPhysicalRx(dominant.rxOffset));
-    Serial.print(',');
-    Serial.println(dominant.size);
-  }
-  evalWasValidLastFrame = dominant.valid;
-#endif
-
 #if ENABLE_CONTROL_PADS
   bool replaying = handleControlPads(dominant);
   updateRecordLed();
@@ -896,22 +736,5 @@ void loop() {
   if (!replaying) {
     updateDacFromDominantTouch(dominant);
   }
-
-#if EVAL_MODE == 2
-  unsigned long evalT1 = micros();
-  Serial.print(F("LATENCY_US,"));
-  Serial.println(evalT1 - evalT0);
-#endif
-
   printActiveTouches(stateChanged);
-
-#if EVAL_MODE == 1
-  unsigned long evalNow = millis();
-  if (evalNow - evalLastReportMs >= 1000) {
-    Serial.print(F("FPS,"));
-    Serial.println(evalFrameCount);
-    evalFrameCount = 0;
-    evalLastReportMs = evalNow;
-  }
-#endif
 }
