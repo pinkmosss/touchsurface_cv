@@ -1,7 +1,5 @@
 # 4 Implementation
 
-> Converted from *MaryamThesis_2026.pdf*, chapter 4, pages 31–52. Original wording, numbering, and citation references are retained; PDF line wrapping and typography are normalized.
-
 This chapter describes the implementation of TouchSurface CV. This module combines a playable Eurorack interface with an embedded capacitive-sensing system. The electrode geometry determines the measurements available for processing, while the resources of the ATmega328 constrain how these measurements can be handled. At the same time, latency and synchronization requirements affect both circuit and firmware design. The following sections therefore focus on these interactions, with particular attention to ADC usage, interrupt timing, and memory constraints.
 
 The final design was evolved through the experiments described in Chapter 3. It began with handmade sensors, followed by PCB test surfaces, and eventually leading to the hardware and firmware presented in this chapter. The prototypes were evaluated with their intended use as a musical instrument in mind. The touch surface needed to provide sufficient space for hand movement, patch cables had to remain clear of the playing area, and the voltage outputs needed to represent useful dimensions of the touch interaction. The design also needed to remain modifiable. Some implementation decisions are based on the prior work discussed in Chapter 2, while others result from practical limitations identified during prototyping.
